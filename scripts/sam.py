@@ -28,6 +28,8 @@ sd_sam_model_dir = os.path.join(models_path, "sam")
 sam_model_dir = sd_sam_model_dir if os.path.exists(sd_sam_model_dir) else scripts_sam_model_dir 
 sam_model_list = [f for f in os.listdir(sam_model_dir) if os.path.isfile(os.path.join(sam_model_dir, f)) and f.split('.')[-1] != 'txt']
 
+# SAM_DEVICE = "cpu" #device
+SAM_DEVICE = device
 
 txt2img_width: gr.Slider = None
 txt2img_height: gr.Slider = None
@@ -74,7 +76,8 @@ def load_sam_model(sam_checkpoint):
     sam_checkpoint = os.path.join(sam_model_dir, sam_checkpoint)
     torch.load = unsafe_torch_load
     sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
-    sam.to(device=device)
+    sam.to(device=SAM_DEVICE)
+    # sam.to(device=device)
     sam.eval()
     torch.load = load
     return sam
@@ -191,8 +194,11 @@ def sam_predict(sam_model_name, input_image, positive_points, negative_points,
     image_np_rgb = image_np[..., :3]
     dino_enabled = dino_checkbox and text_prompt is not None
     boxes_filt = None
+    model_boxes_filt = None
     sam_predict_result = " done."
+    model_prompt = "model"
     if dino_enabled:
+        model_boxes_filt, _ = dino_predict_internal(input_image, dino_model_name, model_prompt, box_threshold)
         boxes_filt, install_success = dino_predict_internal(input_image, dino_model_name, text_prompt, box_threshold)
         if install_success and dino_preview_checkbox is not None and dino_preview_checkbox and dino_preview_boxes_selection is not None:
             valid_indices = [int(i) for i in dino_preview_boxes_selection if int(i) < boxes_filt.shape[0]]
@@ -202,19 +208,30 @@ def sam_predict(sam_model_name, input_image, positive_points, negative_points,
                 return [], f"GroundingDINO installment has failed. Check your terminal for more detail and {dino_install_issue_text}. "
             else:
                 sam_predict_result += f" However, GroundingDINO installment has failed. Your process automatically fall back to point prompt only. Check your terminal for more detail and {dino_install_issue_text}. "
+    # save varm
+    # clear_dino_cache()
     sam = init_sam_model(sam_model_name)
     print(f"Running SAM Inference {image_np_rgb.shape}")
     predictor = SamPredictor(sam)
     predictor.set_image(image_np_rgb)
-    if dino_enabled and boxes_filt.shape[0] > 1:
+    if dino_enabled and boxes_filt.shape[0] > 0:
         sam_predict_status = f"SAM inference with {boxes_filt.shape[0]} boxes, point prompts disgarded"
         print(sam_predict_status)
+        model_transformed_boxes = predictor.transform.apply_boxes_torch(model_boxes_filt, image_np.shape[:2])
+        model_masks, _, _ = predictor.predict_torch(
+            point_coords=None,
+            point_labels=None,
+            boxes=model_transformed_boxes.to(SAM_DEVICE),
+            multimask_output=True)
+                
         transformed_boxes = predictor.transform.apply_boxes_torch(boxes_filt, image_np.shape[:2])
         masks, _, _ = predictor.predict_torch(
             point_coords=None,
             point_labels=None,
-            boxes=transformed_boxes.to(device),
+            boxes=transformed_boxes.to(SAM_DEVICE),
             multimask_output=True)
+        # masks = model_masks
+        # masks = torch.logical_and(model_masks, ~masks)
         masks = masks.permute(1, 0, 2, 3).cpu().numpy()
     else:
         num_box = 0 if boxes_filt is None else boxes_filt.shape[0]
@@ -235,6 +252,8 @@ def sam_predict(sam_model_name, input_image, positive_points, negative_points,
             box=box,
             multimask_output=True)
         masks = masks[:, None, ...]
+    # clear_dino_cache()
+    # clear_sam_cache()
     garbage_collect(sam)
     return create_mask_output(image_np, masks, boxes_filt), sam_predict_status + sam_predict_result
 

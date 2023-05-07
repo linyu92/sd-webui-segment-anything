@@ -85,6 +85,7 @@ def load_dino_model(dino_checkpoint):
             dino_model_info[dino_checkpoint]["url"], dino_model_dir)
         dino.load_state_dict(clean_state_dict(
             checkpoint['model']), strict=False)
+        # dino.to(device="cpu")
         dino.to(device=device)
         dino_model_cache[dino_checkpoint] = dino
     dino.eval()
