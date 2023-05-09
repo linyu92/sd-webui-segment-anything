@@ -65,6 +65,11 @@ def update_mask(mask_gallery, chosen_mask, dilation_amt, input_image):
     binary_img = np.array(mask_image.convert('1'))
     if dilation_amt:
         mask_image, binary_img = dilate_mask(binary_img, dilation_amt)
+    clothes_mask_image = Image.open(mask_gallery[chosen_mask + 12]['name'])
+    clothes_mask_image = np.array(clothes_mask_image.convert('1'))
+    binary_img = torch.logical_and(torch.from_numpy(binary_img), ~torch.from_numpy(clothes_mask_image))
+    binary_img = binary_img.numpy()
+    mask_image = Image.fromarray(binary_img.astype(np.uint8) * 255)
     blended_image = Image.fromarray(show_masks(np.array(input_image), binary_img.astype(np.bool_)[None, ...]))
     matted_image = np.array(input_image)
     matted_image[~binary_img] = np.array([0, 0, 0, 0])
@@ -141,18 +146,24 @@ def dilate_mask(mask, dilation_amt):
     return dilated_mask, dilated_binary_img
 
 
-def create_mask_output(image_np, masks, boxes_filt):
+def create_mask_output(image_np, masks, boxes_filt, model_masks, clothes_masks):
     print("Creating output image")
-    mask_images, masks_gallery, matted_images = [], [], []
+    mask_images, masks_gallery, matted_images, model_masks_gallery, clothes_masks_gallery = [], [], [], [], []
     boxes_filt = boxes_filt.numpy().astype(int) if boxes_filt is not None else None
-    for mask in masks:
-        masks_gallery.append(Image.fromarray(np.any(mask, axis=0)))
+    for idx in range(max(len(masks), len(model_masks), len(clothes_masks))):
+        mask = masks[min(idx, len(masks) - 1)]
+        masks_gallery.append(Image.fromarray(np.any(mask, axis=0)))  
+        model_mask = model_masks[min(idx, len(model_masks) - 1)]
+        model_masks_gallery.append(Image.fromarray(np.any(model_mask, axis=0)))  
+        clothes_mask = clothes_masks[min(idx, len(clothes_masks) - 1)]
+        clothes_masks_gallery.append(Image.fromarray(np.any(clothes_mask, axis=0)))          
         blended_image = show_masks(show_boxes(image_np, boxes_filt), mask)
         mask_images.append(Image.fromarray(blended_image))
         image_np_copy = copy.deepcopy(image_np)
         image_np_copy[~np.any(mask, axis=0)] = np.array([0, 0, 0, 0])
         matted_images.append(Image.fromarray(image_np_copy))
-    return mask_images + masks_gallery + matted_images
+    # for mask in masks:
+    return mask_images + masks_gallery + matted_images + model_masks_gallery + clothes_masks_gallery
 
 
 def create_mask_batch_output(
@@ -231,8 +242,11 @@ def sam_predict(sam_model_name, input_image, positive_points, negative_points,
             boxes=transformed_boxes.to(SAM_DEVICE),
             multimask_output=True)
         # masks = model_masks
+        model_body_masks = torch.logical_and(model_masks, ~masks)
         # masks = torch.logical_and(model_masks, ~masks)
-        masks = masks.permute(1, 0, 2, 3).cpu().numpy()
+        clothes_masks = masks.permute(1, 0, 2, 3).cpu().numpy()
+        model_masks = model_masks.permute(1, 0, 2, 3).cpu().numpy()
+        model_body_masks = model_body_masks.permute(1, 0, 2, 3).cpu().numpy()
     else:
         num_box = 0 if boxes_filt is None else boxes_filt.shape[0]
         num_points = len(positive_points) + len(negative_points)
@@ -255,7 +269,7 @@ def sam_predict(sam_model_name, input_image, positive_points, negative_points,
     # clear_dino_cache()
     # clear_sam_cache()
     garbage_collect(sam)
-    return create_mask_output(image_np, masks, boxes_filt), sam_predict_status + sam_predict_result
+    return create_mask_output(image_np, model_body_masks, boxes_filt, model_masks, clothes_masks), sam_predict_status + sam_predict_result
 
 
 def dino_predict(input_image, dino_model_name, text_prompt, box_threshold):
@@ -385,7 +399,7 @@ def categorical_mask(
     garbage_collect(sam)
     if isinstance(outputs, str):
         return [], outputs, None
-    output_gallery = create_mask_output(resized_input_image_np, outputs[None, None, ...], None)
+    output_gallery = create_mask_output(resized_input_image_np, outputs[None, None, ...], None, None, None)
     return output_gallery, "Done", resized_input_image_pil
 
 
